@@ -13,7 +13,7 @@ Qwen matching substrings (case-insensitive): `qwen2.5-vl`, `qwen-vl`, `qwen25vl`
 - Packages:
   - openai (>=1.0.0)
   - pillow
-  - editdistance (auto-installed by the evaluator if missing)
+  - editdistance (optional; the evaluator falls back to a built-in edit-distance implementation if missing)
 
 Install:
 ```bash
@@ -53,6 +53,16 @@ Minimal trajectory schema (example):
 Notes:
 - Coordinates are relative (0–1). When metadata bounding boxes are available, evaluation accepts any click/move that falls inside the bbox.
 - For write+enter sequences, the evaluator merges them for robust scoring.
+- The evaluator does not install packages at import time. Missing optional
+  `editdistance` uses a built-in fallback so offline re-evaluation does not
+  mutate the runtime environment.
+- `press` and `hotkey` compare normalized key sequences while preserving order
+  and repeated keys.
+- `scroll` compares direction and amount. Opposite-direction scrolls receive no
+  credit; same-direction numeric scrolls receive an amount-ratio score.
+- Extra predicted actions are penalized by `len(ground_truth_actions) /
+  len(predicted_actions)`, preventing a correct first action followed by
+  unrelated actions from receiving full credit.
 
 ### Run evaluation
 ```bash
@@ -93,9 +103,8 @@ python reeval.py \
 
 ### Troubleshooting
 - openai import warnings in your IDE: install `openai>=1.0.0`.
-- editdistance missing: it is installed on-the-fly by the evaluator; you can also `pip install editdistance` manually.
+- editdistance missing: the evaluator uses a built-in fallback; you can also `pip install editdistance` manually for faster write-action scoring.
 - No results or low scores: ensure `--image_dir` points to the correct images and your model name triggers the intended agent.
 
 ### License
 This repository is intended for research and benchmarking. Please review the project’s root-level license for terms.
-

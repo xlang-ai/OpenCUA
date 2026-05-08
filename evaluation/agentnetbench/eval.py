@@ -3,15 +3,11 @@ from collections import defaultdict
 import math
 from typing import Dict, List, Tuple, Any
 
-# Import editdistance package for improved text comparison
 try:
     import editdistance
 except ImportError:
-    print("Warning: editdistance package not found. Installing...")
-    import subprocess
-    import sys
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "editdistance"])
-    import editdistance
+    editdistance = None
+
 
 class ActionEvaluator:
     """Class to evaluate predicted actions against ground truth actions."""
@@ -21,6 +17,83 @@ class ActionEvaluator:
         self.COORD_THRESHOLD = 0.01 * 2 ** 0.5
         self.ALPHA = 120
         self.WRITE_SIMILARITY_THRESHOLD = 0.8
+
+    def edit_distance(self, left: str, right: str) -> int:
+        """Return Levenshtein distance without mutating the runtime environment."""
+        if editdistance is not None:
+            return editdistance.eval(left, right)
+
+        if left == right:
+            return 0
+        if not left:
+            return len(right)
+        if not right:
+            return len(left)
+
+        previous = list(range(len(right) + 1))
+        for i, left_char in enumerate(left, start=1):
+            current = [i]
+            for j, right_char in enumerate(right, start=1):
+                insertion = current[j - 1] + 1
+                deletion = previous[j] + 1
+                substitution = previous[j - 1] + (left_char != right_char)
+                current.append(min(insertion, deletion, substitution))
+            previous = current
+        return previous[-1]
+
+    def normalize_keys(self, keys: Any) -> List[str]:
+        """Normalize key sequences while preserving order and repeated keys."""
+        if isinstance(keys, list):
+            return [str(key).lower() for key in keys]
+        if keys in (None, ""):
+            return []
+        return [str(keys).lower()]
+
+    def scroll_direction(self, value: Any) -> int:
+        """Return -1 for down/negative, 1 for up/positive, 0 if unknown."""
+        if isinstance(value, (int, float)):
+            if value > 0:
+                return 1
+            if value < 0:
+                return -1
+            return 0
+
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"up", "positive"}:
+                return 1
+            if normalized in {"down", "negative"}:
+                return -1
+            try:
+                return self.scroll_direction(float(normalized))
+            except ValueError:
+                return 0
+        return 0
+
+    def scroll_score(self, predicted: Any, ground_truth: Dict[str, Any]) -> float:
+        """Score scroll direction and amount instead of action type only."""
+        gt_params = ground_truth.get("params", {})
+        gt_amount = gt_params.get("amount", gt_params.get("pixels"))
+        gt_direction = self.scroll_direction(
+            gt_amount if gt_amount is not None else gt_params.get("direction")
+        )
+        pred_direction = self.scroll_direction(predicted)
+
+        if gt_direction and pred_direction and gt_direction != pred_direction:
+            return 0.0
+        if gt_direction and not pred_direction:
+            return 0.0
+
+        if isinstance(predicted, (int, float)) and isinstance(gt_amount, (int, float)):
+            pred_amount = abs(float(predicted))
+            true_amount = abs(float(gt_amount))
+            if pred_amount == 0 and true_amount == 0:
+                return 1.0
+            if pred_amount == 0 or true_amount == 0:
+                return 0.0
+            return min(pred_amount, true_amount) / max(pred_amount, true_amount)
+
+        return 1.0 if gt_direction == pred_direction else 0.0
 
     def is_point_in_bbox(self, x: float, y: float, bbox: List[float]) -> bool:
         """Check if a point (x,y) is inside a bounding box.
@@ -135,14 +208,23 @@ class ActionEvaluator:
         # Use processed actions for evaluation
         ground_truth = processed_gt
         predictions = processed_pred
+        action_count_penalty = 1.0
+        if len(predictions) > len(ground_truth):
+            action_count_penalty = len(ground_truth) / len(predictions)
 
         scores = defaultdict(float)
         action_counts = defaultdict(int)
 
         # Handle terminate action
         if ground_truth[0]['type'] == 'terminate':
-            if predictions[0][0] == 'terminate' and predictions[0][1] == ground_truth[0]['params']['status']:
-                return {"total": 1.0, "actions": {"terminate": 1.0}}
+            if (
+                predictions[0][0] == 'terminate'
+                and predictions[0][1] == ground_truth[0]['params']['status']
+            ):
+                return {
+                    "total": 1.0 * action_count_penalty,
+                    "actions": {"terminate": 1.0 * action_count_penalty}
+                }
             else:
                 return {"total": 0.0, "actions": {"terminate": 0.0}}
 
@@ -247,7 +329,7 @@ class ActionEvaluator:
                 if max_len == 0:
                     similarity = 1.0
                 else:
-                    edit_dist = editdistance.eval(p_val, g_content)
+                    edit_dist = self.edit_distance(p_val, g_content)
                     similarity = 1.0 - (edit_dist / max_len)
                     
                     if g_has_newline != p_has_newline:
@@ -263,34 +345,25 @@ class ActionEvaluator:
             elif g_type in ['press', 'hotkey']:
                 g_keys = gt['params'].get('keys', [])
                 
-                # Handle press and hotkey actions more flexibly
                 if isinstance(p_val, list) and isinstance(g_keys, list):
-                    # Normalize keys to lowercase only
-                    normalized_p_keys = [k.lower() for k in p_val]
-                    normalized_g_keys = [k.lower() for k in g_keys]
-                    
-                    # Check if key sets match (ignoring order)
-                    p_key_set = set(normalized_p_keys)
-                    g_key_set = set(normalized_g_keys)
-                    
-                    if p_key_set == g_key_set:
-                        # Perfect match
+                    normalized_p_keys = self.normalize_keys(p_val)
+                    normalized_g_keys = self.normalize_keys(g_keys)
+
+                    if normalized_p_keys == normalized_g_keys:
                         scores[g_type] += 1.0
                     else:
-                        # No match
                         scores[g_type] += 0.0
                 else:
                     # Fallback to exact match if not list comparison
                     scores[g_type] += 1.0 if p_val == g_keys else 0.0
 
             elif g_type == 'scroll':
-                # For scroll actions, we only care that the action type is 'scroll'
-                # No need to check direction or amount
-                scores[g_type] += 1.0
+                scores[g_type] += self.scroll_score(p_val, gt)
 
         # Calculate final scores
         for action_type in scores:
             scores[action_type] /= action_counts[action_type]
+            scores[action_type] *= action_count_penalty
 
         # Calculate total score as average of ground truth action scores
         action_score = sum(scores.values()) / len(scores) if scores else 0.0
