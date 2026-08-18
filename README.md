@@ -311,7 +311,7 @@ Empirically, models trained with these rich CoTs scale better with data and gene
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=xlang-ai/OpenCUA&type=date&legend=top-left)](https://www.star-history.com/#xlang-ai/OpenCUA&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=xlang-ai/OpenCUA&type=date&legend=top-left)](https://star-history.dera.page/#xlang-ai/OpenCUA&type=date&legend=top-left)
 
 ## Acknowledge
 <p>
